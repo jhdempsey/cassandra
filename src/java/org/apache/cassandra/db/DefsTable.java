@@ -29,10 +29,6 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.MapDifference;
 import com.google.common.collect.Maps;
 
-import org.apache.avro.io.BinaryDecoder;
-import org.apache.avro.io.DecoderFactory;
-import org.apache.avro.specific.SpecificDatumReader;
-import org.apache.avro.specific.SpecificRecord;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.filter.QueryFilter;
@@ -115,13 +111,6 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 public class DefsTable
 {
     private final static Logger logger = LoggerFactory.getLogger(DefsTable.class);
-
-    // unbuffered decoders
-    private final static DecoderFactory DIRECT_DECODERS = new DecoderFactory().configureDirectDecoder(true);
-
-    // column name for the schema storing serialized keyspace definitions
-    // NB: must be an invalid keyspace name
-    public static final ByteBuffer DEFINITION_SCHEMA_COLUMN_NAME = ByteBufferUtil.bytes("Avro/Schema");
 
     public static final String OLD_MIGRATIONS_CF = "Migrations";
     public static final String OLD_SCHEMA_CF = "Schema";
@@ -289,36 +278,8 @@ public class DefsTable
         Table defs = Table.open(Table.SYSTEM_KS);
         ColumnFamilyStore cfStore = defs.getColumnFamilyStore(OLD_SCHEMA_CF);
         ColumnFamily cf = cfStore.getColumnFamily(QueryFilter.getIdentityFilter(vkey, new QueryPath(OLD_SCHEMA_CF)));
-        IColumn avroschema = cf.getColumn(DEFINITION_SCHEMA_COLUMN_NAME);
 
         Collection<KSMetaData> keyspaces = Collections.emptyList();
-
-        if (avroschema != null)
-        {
-            ByteBuffer value = avroschema.value();
-            org.apache.avro.Schema schema = org.apache.avro.Schema.parse(ByteBufferUtil.string(value));
-
-            // deserialize keyspaces using schema
-            Collection<IColumn> columns = cf.getSortedColumns();
-            keyspaces = new ArrayList<KSMetaData>(columns.size());
-
-            for (IColumn column : columns)
-            {
-                if (column.name().equals(DEFINITION_SCHEMA_COLUMN_NAME))
-                    continue;
-                KsDef ks = deserializeAvro(schema, column.value(), new KsDef());
-                keyspaces.add(Avro.ksFromAvro(ks));
-            }
-
-            // store deserialized keyspaces into new place
-            save(keyspaces);
-
-            flushSchemaCFs();
-
-            logger.info("Truncating deprecated system column families (migrations, schema)...");
-            dropColumnFamily(Table.SYSTEM_KS, OLD_MIGRATIONS_CF);
-            dropColumnFamily(Table.SYSTEM_KS, OLD_SCHEMA_CF);
-        }
 
         return keyspaces;
     }
@@ -630,24 +591,5 @@ public class DefsTable
     private static ByteBuffer toUTF8Bytes(UUID version)
     {
         return ByteBufferUtil.bytes(version.toString());
-    }
-
-    /**
-     * Deserialize a single object based on the given Schema.
-     *
-     * @param writer writer's schema
-     * @param bytes Array to deserialize from
-     * @param ob An empty object to deserialize into (must not be null).
-     *
-     * @return serialized Avro object
-     *
-     * @throws IOException if deserialization failed
-     */
-    public static <T extends SpecificRecord> T deserializeAvro(org.apache.avro.Schema writer, ByteBuffer bytes, T ob) throws IOException
-    {
-        BinaryDecoder dec = DIRECT_DECODERS.createBinaryDecoder(ByteBufferUtil.getArray(bytes), null);
-        SpecificDatumReader<T> reader = new SpecificDatumReader<T>(writer);
-        reader.setExpected(ob.getSchema());
-        return reader.read(ob, dec);
     }
 }
